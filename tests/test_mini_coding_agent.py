@@ -7,6 +7,7 @@ from mini_coding_agent import (
     MiniAgent,
     OllamaModelClient,
     SessionStore,
+    SkillRegistry,
     WorkspaceContext,
     build_welcome,
 )
@@ -397,3 +398,30 @@ def test_ollama_client_posts_expected_payload():
     assert captured["body"]["raw"] is False
     assert captured["body"]["think"] is False
     assert captured["body"]["options"]["num_predict"] == 42
+
+
+def test_skill_registry_discovers_and_matches_skills(tmp_path):
+    skill_dir = tmp_path / "skill" / "pr-review"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.md").write_text("Review pull requests for correctness and security.", encoding="utf-8")
+
+    registry = SkillRegistry(tmp_path)
+    match = registry.find_best_match("Please review this pull request for security issues")
+
+    assert match is not None
+    skill, score = match
+    assert skill.name == "pr-review"
+    assert score >= 0.12
+
+
+def test_agent_logs_triggered_skill(tmp_path):
+    skill_dir = tmp_path / "skill" / "bug-fix"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "skill.md").write_text("Diagnose the bug and patch the root cause.", encoding="utf-8")
+
+    agent = build_agent(tmp_path, ["<final>fixed</final>"])
+    prompt = agent.build_skill_prompt("fix the bug in the parser")
+
+    assert "Skill instructions for 'bug-fix'" in prompt
+    assert "Diagnose the bug and patch the root cause." in prompt
+    assert agent.session["memory"]["skill_log"][-1]["skill"] == "bug-fix"

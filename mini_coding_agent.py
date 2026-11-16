@@ -140,6 +140,73 @@ class WorkspaceContext:
         ])
 
 
+class Skill:
+    def __init__(self, root, path):
+        self.root = Path(root)
+        self.path = Path(path)
+        self.name = self.path.parent.name
+        self.instructions = self.path.read_text(encoding="utf-8", errors="replace").strip()
+        self.keywords = self._tokens(self.name + " " + self.instructions)
+
+    @staticmethod
+    def _tokens(text):
+        return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+    def similarity(self, prompt):
+        prompt_tokens = self._tokens(prompt)
+        if not prompt_tokens:
+            return 0.0
+        if not self.keywords:
+            return 0.0
+        intersection = len(self.keywords & prompt_tokens)
+        union = len(self.keywords | prompt_tokens)
+        score = (intersection / union) if union else 0.0
+        if self.name.lower() in re.sub(r"[^a-z0-9]+", " ", prompt.lower()):
+            score += 0.2
+        if self.path.stem.lower() in re.sub(r"[^a-z0-9]+", " ", prompt.lower()):
+            score += 0.15
+        return min(1.0, round(score, 4))
+
+    def render(self):
+        return f"Skill: {self.name}\nPath: {self.path.relative_to(self.root)}\n\n{self.instructions}"
+
+
+class SkillRegistry:
+    def __init__(self, root):
+        self.root = Path(root)
+        self.skills = self.discover()
+
+    def discover(self):
+        paths = []
+        for candidate in sorted(self.root.rglob("skill.md")):
+            if any(part in IGNORED_PATH_NAMES for part in candidate.relative_to(self.root).parts[:-1]):
+                continue
+            paths.append(candidate)
+        skills = [Skill(self.root, path) for path in dict.fromkeys(paths)]
+        return sorted(skills, key=lambda item: item.name.lower())
+
+    def find_best_match(self, prompt):
+        if not prompt or not self.skills:
+            return None
+        best = None
+        best_score = 0.0
+        for skill in self.skills:
+            score = skill.similarity(prompt)
+            if score > best_score:
+                best = skill
+                best_score = score
+        if best is not None and best_score >= 0.12:
+            return best, best_score
+        return None
+
+    def trigger(self, prompt):
+        match = self.find_best_match(prompt)
+        if match is None:
+            return None
+        skill, score = match
+        return {"skill": skill, "score": score, "instructions": skill.render()}
+
+
 ##############################
 #### 5) Session Memory #######
 ##############################
@@ -246,13 +313,15 @@ class MiniAgent:
         self.depth = depth
         self.max_depth = max_depth
         self.read_only = read_only
+        self.skill_registry = SkillRegistry(self.root)
         self.session = session or {
             "id": datetime.now().strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6],
             "created_at": now(),
             "workspace_root": workspace.repo_root,
             "history": [],
-            "memory": {"task": "", "files": [], "notes": []},
+            "memory": {"task": "", "files": [], "notes": [], "skill_log": []},
         }
+        self.session["memory"].setdefault("skill_log", [])
         self.tools = self.build_tools()
         self.prefix = self.build_prefix()
         self.session_path = self.session_store.save(self.session)
@@ -286,6 +355,12 @@ class MiniAgent:
                 "risky": False,
                 "description": "List files in the workspace.",
                 "run": self.tool_list_files,
+            },
+            "list_skills": {
+                "schema": {"path": "str='.'"},
+                "risky": False,
+                "description": "List discovered agent skills in the repository.",
+                "run": self.tool_list_skills,
             },
             "read_file": {
                 "schema": {"path": "str", "start": "int=1", "end": "int=200"},
@@ -442,11 +517,38 @@ class MiniAgent:
         note = f"{name}: {clip(str(result).replace(chr(10), ' '), 220)}"
         self.remember(memory["notes"], note, 5)
 
+    def resolve_skill(self, user_message):
+        match = self.skill_registry.find_best_match(user_message)
+        if match is None:
+            return None
+        skill, score = match
+        log_entry = {
+            "prompt": user_message,
+            "similarity": round(score, 4),
+            "skill": skill.name,
+            "path": str(skill.path.relative_to(self.root)),
+        }
+        skill_log = self.session["memory"].setdefault("skill_log", [])
+        skill_log.append(log_entry)
+        self.record({
+            "role": "assistant",
+            "content": f"[skill] matched {skill.name} with similarity {round(score, 4)}",
+            "created_at": now(),
+        })
+        return skill
+
+    def build_skill_prompt(self, user_message):
+        skill = self.resolve_skill(user_message)
+        if skill is None:
+            return user_message
+        return f"Skill instructions for '{skill.name}':\n{skill.render()}\n\nOriginal request:\n{user_message}"
+
     def ask(self, user_message):
         memory = self.session["memory"]
         if not memory["task"]:
             memory["task"] = clip(user_message.strip(), 300)
         self.record({"role": "user", "content": user_message, "created_at": now()})
+        prompt_message = self.build_skill_prompt(user_message)
 
         tool_steps = 0
         attempts = 0
@@ -454,7 +556,7 @@ class MiniAgent:
 
         while tool_steps < self.max_steps and attempts < max_attempts:
             attempts += 1
-            raw = self.model_client.complete(self.prompt(user_message), self.max_new_tokens)
+            raw = self.model_client.complete(self.prompt(prompt_message), self.max_new_tokens)
             kind, payload = self.parse(raw)
 
             if kind == "tool":
@@ -752,6 +854,18 @@ class MiniAgent:
             kind = "[D]" if entry.is_dir() else "[F]"
             lines.append(f"{kind} {entry.relative_to(self.root)}")
         return "\n".join(lines) or "(empty)"
+
+    def tool_list_skills(self, args):
+        path = self.path(args.get("path", "."))
+        if not path.is_dir():
+            raise ValueError("path is not a directory")
+        if not self.skill_registry.skills:
+            return "(no skills found)"
+        lines = []
+        for skill in self.skill_registry.skills:
+            rel = skill.path.relative_to(self.root)
+            lines.append(f"{skill.name}: {rel}")
+        return "\n".join(lines)
 
     def tool_read_file(self, args):
         path = self.path(args["path"])
