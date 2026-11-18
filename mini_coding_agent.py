@@ -297,7 +297,7 @@ class MiniAgent:
         session_store,
         session=None,
         approval_policy="ask",
-        max_steps=6,
+        max_steps=10,
         max_new_tokens=512,
         depth=0,
         max_depth=1,
@@ -375,7 +375,7 @@ class MiniAgent:
                 "run": self.tool_search,
             },
             "run_shell": {
-                "schema": {"command": "str", "timeout": "int=20"},
+                "schema": {"command": "str", "timeout": "int=60"},
                 "risky": True,
                 "description": "Run a shell command in the repo root.",
                 "run": self.tool_run_shell,
@@ -418,7 +418,7 @@ class MiniAgent:
                 '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
                 '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
                 '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
-                '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
+                '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":60}}</tool>',
                 "<final>Done.</final>",
             ]
         )
@@ -628,7 +628,7 @@ class MiniAgent:
             "list_files": '<tool>{"name":"list_files","args":{"path":"."}}</tool>',
             "read_file": '<tool>{"name":"read_file","args":{"path":"README.md","start":1,"end":80}}</tool>',
             "search": '<tool>{"name":"search","args":{"pattern":"binary_search","path":"."}}</tool>',
-            "run_shell": '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":20}}</tool>',
+            "run_shell": '<tool>{"name":"run_shell","args":{"command":"uv run --with pytest python -m pytest -q","timeout":60}}</tool>',
             "write_file": '<tool name="write_file" path="binary_search.py"><content>def binary_search(nums, target):\n    return -1\n</content></tool>',
             "patch_file": '<tool name="patch_file" path="binary_search.py"><old_text>return -1</old_text><new_text>return mid</new_text></tool>',
             "delegate": '<tool>{"name":"delegate","args":{"task":"inspect README.md","max_steps":3}}</tool>',
@@ -665,7 +665,7 @@ class MiniAgent:
             command = str(args.get("command", "")).strip()
             if not command:
                 raise ValueError("command must not be empty")
-            timeout = int(args.get("timeout", 20))
+            timeout = int(args.get("timeout", 60))
             if timeout < 1 or timeout > 120:
                 raise ValueError("timeout must be in [1, 120]")
             return
@@ -911,7 +911,7 @@ class MiniAgent:
         command = str(args.get("command", "")).strip()
         if not command:
             raise ValueError("command must not be empty")
-        timeout = int(args.get("timeout", 20))
+        timeout = int(args.get("timeout", 60))
         if timeout < 1 or timeout > 120:
             raise ValueError("timeout must be in [1, 120]")
         result = subprocess.run(
@@ -1073,7 +1073,7 @@ def build_arg_parser():
         default="ask",
         help="Approval policy for risky tools; auto grants the model arbitrary command execution and file writes.",
     )
-    parser.add_argument("--max-steps", type=int, default=6, help="Maximum tool/model iterations per request.")
+    parser.add_argument("--max-steps", type=int, default=10, help="Maximum tool calls per request.")
     parser.add_argument("--max-new-tokens", type=int, default=512, help="Maximum model output tokens per step.")
     parser.add_argument("--temperature", type=float, default=0.2, help="Sampling temperature sent to Ollama.")
     parser.add_argument("--top-p", type=float, default=0.9, help="Top-p sampling value sent to Ollama.")

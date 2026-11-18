@@ -1,5 +1,6 @@
 import json
 import pytest
+import subprocess
 from unittest.mock import patch
 
 from mini_coding_agent import (
@@ -46,6 +47,33 @@ def test_agent_runs_tool_then_final(tmp_path):
     assert answer == "Read the file successfully."
     assert any(item["role"] == "tool" and item["name"] == "read_file" for item in agent.session["history"])
     assert "hello.txt" in agent.session["memory"]["files"]
+
+
+def test_run_shell_defaults_to_60_seconds(tmp_path):
+    agent = build_agent(tmp_path, [])
+
+    with patch(
+        "mini_coding_agent.subprocess.run",
+        return_value=subprocess.CompletedProcess("python", 0, stdout="", stderr=""),
+    ) as run:
+        agent.tool_run_shell({"command": "python hyperparameter_sweep.py"})
+
+    assert agent.tools["run_shell"]["schema"]["timeout"] == "int=60"
+    assert run.call_args.kwargs["timeout"] == 60
+
+
+def test_default_step_budget_allows_final_after_six_tool_calls(tmp_path):
+    outputs = []
+    for i in range(6):
+        filename = f"file-{i}.txt"
+        (tmp_path / filename).write_text(f"content {i}\n", encoding="utf-8")
+        outputs.append(f'<tool>{{"name":"read_file","args":{{"path":"{filename}"}}}}</tool>')
+    outputs.append("<final>Investigation complete.</final>")
+
+    agent = build_agent(tmp_path, outputs)
+
+    assert agent.max_steps == 10
+    assert agent.ask("Inspect these files") == "Investigation complete."
 
 
 def test_agent_retries_after_empty_model_output(tmp_path):
